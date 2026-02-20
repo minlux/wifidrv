@@ -1,5 +1,9 @@
 # WiFi-Drive
 
+See also
+https://github.com/Xinyuan-LilyGO/T-Dongle-S3
+
+
 
 ## Hardware
 https://docs.platformio.org/en/latest/boards/espressif32/esp32s3usbotg.html
