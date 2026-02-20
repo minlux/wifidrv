@@ -1,0 +1,17 @@
+# Make the Image
+magick -size 800x600 canvas:red -strip -sampling-factor 4:2:0 -quality 1 -define jpeg:optimize-coding=true red_800x600.jpg
+
+# Compress the Image (for decompressen on micro, http://www.oberhumer.com/opensource/lzo/ could be a good lib!?)
+lzop red_800x600.jpg
+
+# Make C Table
+xxd -c 16 -i red_800x600.jpg > red_800x600.jpg.c
+xxd -c 16 -i red_800x600.jpg.lzo > red_800x600.jpg.lzo.c
+
+
+
+# Make an JPEG from a SVG
+inkscape minlux.svg --export-width=700 --export-height=500 --export-background=white --export-filename=tmp.png
+magick tmp.png -gravity center -background white -extent 800x600 -strip -sampling-factor 4:2:0 -quality 1 minlux.jpg
+
+
