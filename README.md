@@ -11,6 +11,12 @@ https://docs.platformio.org/en/latest/boards/espressif32/esp32s3usbotg.html
 
 ## Software
 
+So make `pio` command available on console:
+
+```
+source .env
+```
+
 ### VS-Code + PlatformIO
 
 In VS-Code wurde extra ein Profil für PlatformIO angelegt, damit es nur dann geladen wird, wenn man es auch braucht ...

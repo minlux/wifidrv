@@ -20,77 +20,46 @@ void loop() {}
 #endif
 
 #include <FastLED.h>
+#include <WiFi.h>
 #include "USB.h"
-#include "USBMSC.h"
+#include "usb_msc.h"
+#include "cli.h"
+#include "credentials.h"
+#include "http_client.h"
 
-#define LED_DI_PIN     40
-#define LED_CI_PIN     39
-
-
-USBMSC MSC;
+#define LED_DI_PIN  40
+#define LED_CI_PIN  39
 CRGB leds[1];
 
-extern "C" uint32_t get_lba_slice(uint32_t lba, void * buffer, uint32_t bufsize);
-extern "C" uint32_t set_lba_slice(uint32_t lba, const void * data, uint32_t len);
 
-
-// offset ist immer 0 !?
-// bufsize ist minimal 512, maxixmal 4096 und immer ein vielfaches von 512 !?
-static int32_t onRead(uint32_t lba, uint32_t offset, void *buffer, uint32_t bufsize)
+void wifi_connect(void)
 {
-    // Serial.printf("onRead: lba=%lu, offset=%lu, buffer=%p, bufsize=%lu\n", lba, offset, buffer, bufsize);
+    char ssid[128], password[128];
+    creds_get_ssid(ssid,         sizeof(ssid));
+    creds_get_password(password, sizeof(password));
 
-    if (lba == 2152) // CREDS.JSN
+    if (ssid[0] == '\0' || password[0] == '\0')
     {
-        leds[0] = CRGB::Yellow;
-        FastLED.show();
+        Serial.println("WiFi: no credentials stored, skipping");
+        return;
     }
-    else if (lba == 2156) // IMG1.JPG
+
+    Serial.printf("WiFi: connecting to \"%s\" ...", ssid);
+    WiFi.begin(ssid, password);
+}
+
+void wifi_status(char *buf, size_t len)
+{
+    if (WiFi.status() == WL_CONNECTED)
     {
-        leds[0] = CRGB::Green;
-        FastLED.show();
+        snprintf(buf, len, "connected, IP %s", WiFi.localIP().toString().c_str());
     }
-    else if (lba == 2412) // IMG2.JPG
+    else
     {
-        leds[0] = CRGB::Blue;
-        FastLED.show();
-    }
-
-    get_lba_slice(lba, buffer, bufsize);
-    return bufsize;
-}
-
-
-static int32_t onWrite(uint32_t lba, uint32_t offset, uint8_t *buffer, uint32_t bufsize)
-{
-    // Serial.printf("onWrite: lba=%lu, offset=%lu, buffer=%p, bufsize=%lu\n", lba, offset, buffer, bufsize);
-    // set_lba_slice(lba, buffer, bufsize);
-    return bufsize;
-}
-
-
-
-static bool onStartStop(uint8_t power_condition, bool start, bool load_eject)
-{
-    Serial.printf("MSC START/STOP: power: %u, start: %u, eject: %u\n", power_condition, start, load_eject);
-    leds[0] = CRGB::Red;
-    FastLED.show();
-    return true;
-}
-
-static void usbEventCallback(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
-{
-    if (event_base == ARDUINO_USB_EVENTS) {
-        arduino_usb_event_data_t *data = (arduino_usb_event_data_t *)event_data;
-        switch (event_id) {
-        case ARDUINO_USB_STARTED_EVENT: Serial.println("USB PLUGGED"); break;
-        case ARDUINO_USB_STOPPED_EVENT: Serial.println("USB UNPLUGGED"); break;
-        case ARDUINO_USB_SUSPEND_EVENT: Serial.printf("USB SUSPENDED: remote_wakeup_en: %u\n", data->suspend.remote_wakeup_en); break;
-        case ARDUINO_USB_RESUME_EVENT:  Serial.println("USB RESUMED"); break;
-        default: break;
-        }
+        snprintf(buf, len, "not connected (status %d)", (int)WiFi.status());
     }
 }
+
 
 void setup()
 {
@@ -98,30 +67,34 @@ void setup()
 
     FastLED.addLeds<APA102, LED_DI_PIN, LED_CI_PIN, BGR>(leds, 1);  // BGR ordering is typical
     FastLED.setBrightness(25);
-
-    //Note:  Arduino IDE -> Tools -> USB Mode -> Select "USB-OTG (TinyUSB)" mode before using this sketch
     leds[0] = CRGB::Red;
     FastLED.show();
 
-    USB.onEvent(usbEventCallback);
-    MSC.vendorID("ESP32");       //max 8 chars
-    MSC.productID("WIFIDRV");    //max 16 chars
-    MSC.productRevision("1.0");  //max 4 chars
-    MSC.onStartStop(onStartStop);
-    MSC.onRead(onRead);
-    MSC.onWrite(onWrite);
-
-    MSC.mediaPresent(true);
-    MSC.isWritable(false);  // true if writable, false if read-only
-
-
-    MSC.begin(64*1024, 512); // Identify as 32MB Stick
+    usb_msc_begin();
     USB.begin();
+    cli_begin();
+    wifi_connect();
 }
 
 void loop()
 {
-    // put your main code here, to run repeatedly:
+    static bool wifi_connected;
+    const bool connected = (WiFi.status() == WL_CONNECTED);
+    if (connected != wifi_connected)
+    {
+        if (connected)
+        {
+            Serial.printf("WiFi: connected, IP %s\n", WiFi.localIP().toString().c_str());
+        }
+        else
+        {
+            Serial.println("WiFi: disconnected");
+        }
+    }
+    wifi_connected = connected;
+
+    cli_process();
+    http_client_process();
 }
 
 

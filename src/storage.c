@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
+#include <Arduino.h>
 
 #define DISK_SECTOR_SIZE (512)
 
@@ -22,7 +23,12 @@ extern const unsigned int FILE_IMG2_JPG_len;
 // @LBA 2152 (0x0010d000)
 // Total size is 2kB (4 sectors, resp. 1 clusters), fill up the rest with zeros
 // Cluster 3
-unsigned char FILE_CREDS_JSN[4 * DISK_SECTOR_SIZE];
+unsigned char FILE_CREDS_JSN[4 * DISK_SECTOR_SIZE]; // 2kB
+unsigned char FILE_IMG_JPG[256 * DISK_SECTOR_SIZE]; // 128kB
+unsigned int  FILE_IMG_JPG_len; // actual fetched size, read by storage.c
+
+// extern volatile uint32_t http_fetch_trigger;
+
 
 static void * get_file_lba(uint32_t offset, void * buffer, const unsigned char data[], uint32_t len)
 {
@@ -76,11 +82,13 @@ static void * get_lba(uint32_t lba, void * buffer)
     }
     if ((lba >= 2156) && (lba < 2412))
     {
-        return get_file_lba(DISK_SECTOR_SIZE * (lba - 2156), buffer, FILE_IMG1_JPG, FILE_IMG1_JPG_len);
+        // return get_file_lba(DISK_SECTOR_SIZE * (lba - 2412), buffer, FILE_IMG1_JPG, FILE_IMG1_JPG_len);
+        return get_file_lba(DISK_SECTOR_SIZE * (lba - 2156), buffer, FILE_IMG_JPG, sizeof(FILE_IMG_JPG));
     }
     if ((lba >= 2412) && (lba < 2668))
     {
-        return get_file_lba(DISK_SECTOR_SIZE * (lba - 2412), buffer, FILE_IMG2_JPG, FILE_IMG2_JPG_len);
+        // return get_file_lba(DISK_SECTOR_SIZE * (lba - 2412), buffer, FILE_IMG2_JPG, FILE_IMG2_JPG_len);
+        return get_file_lba(DISK_SECTOR_SIZE * (lba - 2412), buffer, FILE_IMG_JPG, sizeof(FILE_IMG_JPG));
     }
 
     // Otherwise
@@ -124,4 +132,11 @@ uint32_t set_lba_slice(uint32_t lba, const void * data, uint32_t len)
         set_lba(lba++, data);
     }
     return len;
+}
+
+
+void prepare_files(void)
+{
+    memcpy(FILE_IMG_JPG, FILE_IMG1_JPG, FILE_IMG1_JPG_len);
+    FILE_IMG_JPG_len = FILE_IMG1_JPG_len;
 }
