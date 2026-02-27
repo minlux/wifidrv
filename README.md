@@ -1,126 +1,130 @@
-# WiFi-Drive
+# WiFi-Drive — A WiFi-backed USB Picture Frame Dongle
 
-See also
-https://github.com/Xinyuan-LilyGO/T-Dongle-S3
+## Introduction
 
+Digital picture frames are simple, self-contained devices: they read JPEG images
+from a USB stick and display them in a slideshow. The content is static — whatever
+photos are on the stick when you plug it in are the photos you get. Updating the
+slideshow means physically swapping the stick.
 
+**wifidrv removes that limitation.** Instead of a regular USB stick you plug in
+this dongle. To the picture frame it looks identical — a standard USB mass storage
+device with JPEG files on it. But behind the scenes the dongle is connected to your
+WiFi network and fetches its images from a web server. The picture frame has no idea
+it is talking to anything other than a stick; it just reads files and displays them.
+
+This makes the picture frame effectively **cloud connected**: the web server decides
+what image to show next. It could serve a fixed set of holiday photos, pull images
+from an API, display a daily calendar entry, show a weather map, or rotate through
+anything else that can be expressed as a JPEG. No firmware changes to the picture
+frame, no new app, no screen mirroring — the existing USB slot is all that is needed.
+
+## Concept
+
+wifidrv turns a **LilyGO T-Dongle S3** (ESP32-S3) into a self-contained wireless
+picture frame adapter. The device appears to any host computer as a small, read-only
+**USB Mass Storage stick** (FAT16). The stick contains two JPEG image files. Whenever
+the host reads the last sector of an image file, the device fetches a fresh image from
+a configurable HTTP server and makes it available for the next read — without the host
+ever noticing anything other than a normal USB drive.
 
 ## Hardware
-https://docs.platformio.org/en/latest/boards/espressif32/esp32s3usbotg.html
 
+- **Board:** LilyGO T-Dongle S3 (`ESP32-S3`, USB-OTG, APA102 status LED)
+- **Interface to host:** USB Mass Storage (MSC) via TinyUSB / ESP32 Arduino core
+- **Connectivity:** 802.11 WiFi (ESP32-S3 built-in)
 
-## Software
+## Virtual FAT16 Drive Layout
 
-So make `pio` command available on console:
+The USB drive is not backed by real flash storage. All filesystem structures
+(MBR, VBR, FAT, root directory) are pre-built binary blobs compiled into flash.
+The file data is served from RAM buffers at runtime.
 
-```
-source .env
-```
+| LBA range   | Content                              |
+|-------------|--------------------------------------|
+| 0           | MBR                                  |
+| 2048        | VBR (Volume Boot Record)             |
+| 2052–2083   | FAT #1 (32 sectors)                  |
+| 2084–2115   | FAT #2 (32 sectors)                  |
+| 2116        | Root Directory                       |
+| 2152–2155   | `CREDS.JSN` — credentials (2 KB RAM) |
+| 2156–2411   | `IMG1.JPG` — image slot (128 KB RAM) |
+| 2412–2667   | `IMG2.JPG` — image slot (128 KB RAM) |
 
-### VS-Code + PlatformIO
+Both image slots serve the same RAM buffer. `CREDS.JSN` is a JSON file that
+reflects the currently stored WiFi credentials and is visible on the USB drive.
 
-In VS-Code wurde extra ein Profil für PlatformIO angelegt, damit es nur dann geladen wird, wenn man es auch braucht ...
-VS-Code kann direkt mit diesem Profil gestartet werden:
+Read more about that in [delopment.md](development.md).
 
-```
-code --profile PlatformIO .
-```
+## Boot Sequence
 
-### Mass Storage Device
+1. Serial CLI initialises, loads credentials from NVS, writes them to `CREDS.JSN`.
+2. USB MSC starts; the host sees a read-only 32 MB stick.
+3. Device connects to WiFi using stored SSID and password.
 
-Wir wollen einen "Storage" emulieren.
-Um rauszufinden was wir alles brauchen, bauen wir den Storage erstmal mit einem normalen USB Stick
-und analysieren diesen dann...
+## Image Refresh Trigger
 
+When the host reads **LBA 2411** (last sector of IMG1.JPG) or **LBA 2667**
+(last sector of IMG2.JPG), the USB MSC callback sets a trigger flag.
+The main loop detects the flag and performs an HTTP GET to the configured URL.
+The response body (≤ 128 KB JPEG) is written into the RAM buffer. On the next
+read cycle the host receives the newly fetched image.
 
-1. Dateien vorbereiten
+## Serial CLI
 
-Wir nehmen 2 Beispielbilder und und erweitern diese auf 128kB mit dem `truncate` Kommando.
-Genause erstellen wir mit `truncate` eine leer 2kB Datei:
-
-```
-truncate -s 2k CREDS.JSN
-truncate -s 128k IMG1.JPG
-truncate -s 128k IMG2.JPG
-```
-
-2. Stick Partitionieren
-
-Jetzt nehmen wir einen USB Stick und erstellem darauf, mit `gparted` eine 16MB Partition.
-
-3. Formatieren
-
-Das Formatieren der Partition kann man auch gleich im Schritt 2, in `gparted` machen,
-oder aber wie folgt:
+The device exposes a USB CDC serial port (115200 baud) with a line-based CLI:
 
 ```
-mkfs.fat -F 16 /dev/sdb1
+set ssid      <value>   — store WiFi SSID
+set password  <value>   — store WiFi password (triggers reconnect)
+set url       <value>   — store image server URL
+get ssid|password|url  — read stored value
+get wifi               — show current WiFi connection status and IP
 ```
 
-4. Partition mounten
+All values persist across reboots via **ESP32 NVS** (Non-Volatile Storage).
 
-Jetzt die Partition des Sticks mounten:
+Read more about that in [provisioning.md](provisioning.md)
 
-```
-mkdir -p /tmp/stick
-mount /dev/sdb1 /tmp/stick
-```
+## Source Layout
 
-5. Daten kopieren
+| File | Responsibility |
+|---|---|
+| `src/main.cpp` | Setup/loop, WiFi connect/status |
+| `src/usb_msc.cpp` | USB MSC callbacks, LED feedback, fetch trigger |
+| `src/storage.c` | Virtual FAT16 — LBA → RAM buffer mapping |
+| `src/credentials.cpp` | NVS read/write, CREDS.JSN refresh |
+| `src/cli.cpp` | Serial line buffer, command dispatch |
+| `src/http_client.cpp` | HTTP GET, image buffer fill, trigger state |
+| `src/mbr.c` / `vbr.c` / `fat.c` / `rootdir.c` | Pre-built FAT16 structures (flash) |
+| `src/img1_jpg.c` / `img2_jpg.c` | Fallback images compiled into flash |
 
-Nun die im Schritt 1 erstellten Dateien drauf kopieren:
+## Companion Tools
 
-```
-cp CREDS.JSN /tmp/stick
-cp IMG1.JPG /tmp/stick
-cp IMG2.JPG /tmp/stick
-```
+### `webserver/server.py`
 
-6. Partition umounten
+A dependency-free Python HTTP server that serves images from `webserver/assets/`.
+The `/picture-frame` endpoint returns a randomly selected image on each request.
 
-```
-umount /tmp/stick
-```
-
-7. DD vom Stick
-
-Jetzt holen wir uns ein 20MB Image vom Stick:
-
-```
-dd if=/dev/sdb of=stick16.img bs=4M count=5
+```bash
+python3 webserver/server.py --port 8080
 ```
 
-8. Hexdump davon zum Anschauen
+### `webserver/prepare_assets.sh`
 
-Wir konvertieren den Inhalt in Hexdump:
+An ImageMagick bash script that batch-converts images in `webserver/assets/` to
+800×600 JPEG at quality 65, center-cropping to fit. Keeps files well under the
+128 KB limit imposed by the device's RAM buffer.
 
-```
-hd stick16.img > stick16.hex
-```
-
-9. Inhalt analysieren
-
-Wir analysieren den Hexdump um die Startadressen von *MBR*, *VBR*, *FAT* und *ROOT-Directory* rauszufinden.
-Wir nutzen nun die "Tools" (im Ordner `tools`), um den Inhalt zu dekodieren:
-
-```
-./read_mbr stick16.img 0 > layout.txt
-./read_vbr stick16.img 0x00100000 >> layout.txt
-./read_fat stick16.img 0x00100800 >> layout.txt
-./read_rootdir stick16.img 0x00108800 >> layout.txt
+```bash
+./webserver/prepare_assets.sh
 ```
 
-10. Inhalt extrahieren
+## Build & Flash
 
-Wir extrahieren *MBR*, *VBR*, *FAT* und *ROOT-Directory* aus dem Image
-in "C-Tabellen":
-
+```bash
+source .env          # make pio available
+pio run              # build
+pio run -t upload    # flash
+pio device monitor   # open serial CLI
 ```
-xxd -c 16 -s 0 -l 512 -i stick16.img > mbr.c
-xxd -c 16 -s 1048576 -l 512 -i stick16.img > vbr.c
-xxd -c 16 -s 1050624 -l 512 -i stick16.img > fat.c
-xxd -c 16 -s 1083392 -l 512 -i stick16.img > rootdir.c
-```
-
-Dann die Tabellen und den Integer in den *C-Dateien* `const` machen und in den `src` Ordner kopieren.
-
